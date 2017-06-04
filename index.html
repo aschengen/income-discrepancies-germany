@@ -1,0 +1,758 @@
+<!DOCTYPE html>
+<html>
+
+  <head>
+    <meta charset=utf-8 />
+    <title>Income discrepancies in Germany's federal states</title>
+    <meta name='viewport' content='initial-scale=1,maximum-scale=1,user-scalable=no' />
+    <link rel="stylesheet" href="./css/style.css"></link>
+    <script type="text/javascript" src="./util/d3.js"></script>
+    <script type="text/javascript" src="./util/d3-queue.js"></script>
+    <script type="text/javascript" src=./util/d3-selection-multi.v1.min.js></script>
+  </head>
+
+  <body>
+    <div id="page">
+      <h1>Income discrepancies in Germany's federal states 2015</h1>
+      <h2>Difference between average monthly income in german federal states, differentiated between genders, in comparison to the overall german income average</h2>
+      <div id="content">
+      
+        <div id="left">
+          <svg width="600" height="800" class="map" id="map" viewBox="0 0 600 800"></svg>
+        </div>
+        <div id="right">
+          <svg width="550" height="800" id="legend" text-rendering="optimizeLegibility"></svg>
+        </div>
+      </div>
+    </div>
+
+    <script type="text/javascript">
+
+      var canvas = d3.select("#map"),
+          legend = d3.select("#legend"),
+          width = canvas.attr("width"),
+          height = canvas.attr("height"),
+          projection,
+          path,
+          incomescale = [],
+          populationscale = [],
+          popScaleFactor,
+          incScaleFactor,
+          map_incScaleFactor,
+          map_popScaleFactor,
+          legendwidth = legend.attr("width"),
+          legendheight = legend.attr("height"),
+          elementbufferx = 8,
+          elementbuffery = 100,
+          textanchorright = legendwidth*0.8,
+          textanchorleft = legendwidth*0.05,
+          legendscalefactor = 0.6, //scaling factor for top part of the legend 0-1
+          bot_malefemalescale = 0.8, //scaling factor for the bottom part of the legend
+          textscalefactor = (legendscalefactor+0.1),
+          legendtopwidth = legendwidth,
+          legendtopheight = 400,
+          legendcentery = legendtopheight/2,
+          scalelimit = legendcentery*legendscalefactor,
+          legendcenterx = legendwidth*0.45,
+          map_maxcircle_radius = canvas.attr("height") < canvas.attr("width") ? canvas.attr("width") * 0.075 : canvas.attr("height") * 0.075,
+          q = d3.queue()
+                .defer(d3.json, "./json/bundeslaender.geojson")
+                .await(analyze);
+  
+
+      function analyze(error, d1) {
+        if(error)
+          console.log(error);
+        computeScales(d1);
+        
+        projection = d3.geoMercator().fitSize([width, height], d1);
+
+        path = d3.geoPath().projection(projection);
+
+        bundeslaender = d1;
+      
+        drawLayer(d1, "bundesland");   
+      }
+
+      // Computing 
+      function computeScales(data){
+        //compute income and population scale
+        var malemax = Math.max.apply(Math, (data.features.map(o =>{return Math.abs(o.properties.inc_m-o.properties.inc_gt)}))),
+            femalemax = Math.max.apply(Math, (data.features.map(o =>{return Math.abs(o.properties.inc_f-o.properties.inc_gt)}))),
+            absolutemax = Math.max(malemax,femalemax);
+        
+        var upperincomescalelimit,
+            upperpopulationscalelimit;
+
+        upperincomescalelimit = absolutemax <= 1000 ? Math.ceil(absolutemax/100)*100 : Math.ceil(absolutemax/500)*500;
+  
+        var popmax = Math.max.apply(Math, (data.features.map(o =>{return o.properties.pop_tot})));
+        
+
+        upperpopulationscalelimit =  (popmax <= 10000000) ? (Math.ceil(popmax/1000000)*1000000) : (Math.ceil(popmax/5000000)*5000000);
+
+        //generate classification for income scale
+        var incomescale_classcount = 5;
+
+        for (var i = 1; i <= incomescale_classcount ; i++) {
+          incomescale.push(upperincomescalelimit/incomescale_classcount*i);
+        }
+
+
+        //generate classification for population scale
+        var incomescale_classcount = 5;
+
+        for (var i = 1; i <= incomescale_classcount ; i++) {
+          populationscale.push(upperpopulationscalelimit/incomescale_classcount*i);
+        }
+
+        popScaleFactor = computePopScaleFactor(upperpopulationscalelimit);
+        incScaleFactor = computeIncScaleFactor(upperincomescalelimit);
+        
+        map_popScaleFactor = upperpopulationscalelimit/(Math.pow(map_maxcircle_radius, 2));
+        map_incScaleFactor = upperincomescalelimit/map_maxcircle_radius;
+        drawlegend(incomescale,populationscale);        
+      }
+
+      function drawLayer(layername, classname){
+
+        var areas = canvas.selectAll("path"+classname)
+                          .data(layername.features)
+                          .enter()
+                          .append("path")
+                          .attrs({
+                            "d": path,
+                            "class": classname,
+                            "id": d => { return d.properties.GEN; }});  
+        areas.exit();
+
+        var groups = canvas.selectAll("g").data(layername.features);
+
+        var group = groups.enter()
+                          .append("g")
+                          .attrs({
+                            "id": d => { return d.properties.GEN+"_data"; },
+                            "class": "blanddata"
+                           })
+                          .on("mouseenter", d => { updateLegend(d.properties);
+                                                   d3.select("#"+d.properties.GEN).style("stroke-opacity",1); 
+                                                 })
+                          .on("mouseleave", d => { d3.select("#"+d.properties.GEN).style("stroke-opacity", 0.5); });    
+
+        var circle = group.append("circle")
+                             .attrs({
+                               "cx": d => { return projection([d.properties.lon, d.properties.lat])[0]; },
+                               "cy": d => { return projection([d.properties.lon, d.properties.lat])[1]; },
+                               "r": d => { return Math.sqrt(d.properties.pop_tot / map_popScaleFactor); }
+                             });
+                            
+        var malerect = group.append("rect")
+                            .attrs({
+                              "x": d => { return projection([d.properties.lon, d.properties.lat])[0]; },
+                              "y": d => { return d.properties.inc_m-d.properties.inc_gt < 0 ? projection([d.properties.lon, d.properties.lat])[1] : (projection([d.properties.lon, d.properties.lat])[1] - Math.abs(d.properties.inc_m-d.properties.inc_gt)/map_incScaleFactor); },
+                              "height": d => { return Math.abs(d.properties.inc_m-d.properties.inc_gt)/map_incScaleFactor; },
+                              "width": elementbufferx,
+                              "class": "male"
+                            });
+                            
+        var femalerect = group.append("rect")
+                              .attrs({
+                                "x": d => { return projection([d.properties.lon, d.properties.lat])[0]-elementbufferx; },
+                                "y": d => { return d.properties.inc_f-d.properties.inc_gt < 0 ? projection([d.properties.lon, d.properties.lat])[1] : projection([d.properties.lon, d.properties.lat])[1] - Math.abs(d.properties.inc_f-d.properties.inc_gt)/map_incScaleFactor; },
+                                "height": d =>{ return Math.abs(d.properties.inc_f-d.properties.inc_gt)/map_incScaleFactor; },
+                                "width": elementbufferx,
+                                "class":"female"
+                               });
+      }
+
+      function clearLegend(){
+
+
+        legend.selectAll(".clone").remove();
+      }
+
+      function updateLegend(properties){
+
+        //determine height for male and female income bars
+        var male_height = Math.abs(properties.inc_m-properties.inc_gt)/incScaleFactor,
+            female_height = Math.abs(properties.inc_f-properties.inc_gt)/incScaleFactor;
+
+        //determine the height coordinate for male and female income bars
+        var female_y = (properties.inc_f-properties.inc_gt) < 0 ? legendcentery : legendcentery - female_height,
+            male_y =   (properties.inc_m-properties.inc_gt) < 0 ? legendcentery : legendcentery - male_height,            
+            female_dy = male_y <= female_y ? 10 : -2,
+            male_dy = male_y <= female_y ? -2 : 10;
+
+        //small placeholder... TODO change for a more generic and dynamic way
+        var innertextanchor = textanchorleft+20;
+
+        var clonecontainer = d3.select("#top_container").selectAll("g").data([properties]);
+
+        var clone = clonecontainer.enter();
+
+        clone.append("circle").attr("id", "clonecircle");
+        clone.append("path").attr("id", "clonelinepopulation");
+        clone.append("path").attr("id","clonelinemale");
+        clone.append("path").attr("id","clonelinefemale");
+        clone.append("rect").attr("id","clonemalebar");
+        clone.append("rect").attr("id","clonefemalebar");
+
+        var poptext = clone.append("text").attr("dy", -2),
+            maletext = clone.append("text").attr("dy", male_dy),
+            femaletext = clone.append("text").attr("dy", female_dy).attr("class","absolutevalue "+(properties.inc_f-properties.inc_gt < 0 ? "absolutevaluenegative" : "absolutevaluepositive"));
+
+        poptext.append("textPath").attr("id","clonetextpopulation");
+        maletext.append("textPath").attr("id","clonetextmale");
+        femaletext.append("textPath").attr("id","clonetextfemale");
+        
+
+        clone.select("#clonecircle")
+             .transition()
+             .duration(500)
+             .attrs({
+               "cx": legendcenterx,
+               "cy": legendcentery,
+               "r": d => { return Math.sqrt(d.pop_tot/popScaleFactor); }
+              }); 
+
+        clone.select("#clonelinepopulation")
+             .transition()
+             .duration(500)
+             .attrs({
+               "d": (d) => { return "M"+legendcenterx+","+(legendcentery-Math.sqrt(d.pop_tot/popScaleFactor))+"H"+(legendcenterx+scalelimit+140) },
+               "class":"leaderline"
+              });
+
+        clone.select("#clonelinefemale")
+             .transition()
+             .duration(500)
+             .attrs({
+               "d": "M"+innertextanchor+","+(female_y < legendcentery ? female_y : legendcentery+ female_height)+"H"+(legendcenterx-elementbufferx),
+               "class":"femaleleader"
+             });                            
+        
+        clone.select("#clonemalebar")
+             .transition()
+             .duration(500) 
+             .attrs({
+               "x": legendcenterx,
+               "y": male_y,
+               "height": male_height,
+               "width": elementbufferx*scalelimit/map_maxcircle_radius,
+               "class": "male clone"
+              });
+                            
+        clone.select("#clonefemalebar")
+             .transition()
+             .duration(500)
+             .attrs({
+               "x": legendcenterx-elementbufferx*scalelimit/map_maxcircle_radius,
+               "y": female_y,
+               "height": female_height,
+               "width": elementbufferx*scalelimit/map_maxcircle_radius,
+               "class":"female clone"
+              });
+
+        clone.select("#clonelinemale")
+             .transition()
+             .duration(500)
+             .attrs({
+               "d": "M"+innertextanchor+","+(male_y < legendcentery ? male_y : legendcentery+male_height)+"H"+legendcenterx,
+               "class":"maleleader",
+              });        
+
+        clone.select("#clonetextpopulation")
+             .attrs({  
+               "startOffset": "100%",
+               "xlink:href": "#clonelinepopulation",
+               "class": "absolutevalue"
+              })
+             .style("text-anchor","end")
+             .text( d =>{ return getNumberFormat(d.pop_tot); });
+  
+        clone.select("#clonetextfemale")
+             .style("text-anchor","end")
+             .attrs({
+               "startOffset": "26%",
+               "xlink:href": "#clonelinefemale"
+              })                         
+             .text( d => { return d.inc_f-d.inc_gt < 0 ? d.inc_f-d.inc_gt : ("+"+getNumberFormat(d.inc_f-d.inc_gt)); });
+
+        clone.select("#clonetextmale")
+             .style("text-anchor","end")
+             .attrs({
+               "startOffset": "26%",
+               "xlink:href": "#clonelinemale",
+               "class": d => { return ("absolutevalue "+(properties.inc_m-properties.inc_gt < 0 ? "absolutevaluenegative" : "absolutevaluepositive")); }
+              })                      
+             .text( d => { return d.inc_m-d.inc_gt < 0 ? getNumberFormat(d.inc_m-d.inc_gt) : ("+"+getNumberFormat(d.inc_m-d.inc_gt)); });
+
+        clone.exit().remove();
+   
+        var statetext = legend.select("#statetext")                            
+                              .text(properties.GEN);
+      }
+
+      function computePopScaleFactor(maxpopvalue){    
+        return maxpopvalue/(Math.pow(scalelimit, 2));
+      }
+
+      function computeIncScaleFactor(maxincvalue){
+        return maxincvalue/scalelimit;
+      }
+
+      function getRawNumber(strings){
+        return strings.replace(/\D/g,'');
+      }
+
+      function getNumberFormat(number){
+        return number.toString().replace(/(\d)(?=(\d{3})+(?!\d))/g, "$1.");
+      }
+
+      function drawlegend(incscale, popscale, scalefactor){
+
+        var arcradius =  Math.sqrt(popscale[popscale.length-1]/scalefactor);
+
+        var top_container = legend.append("svg")
+                                  .attrs({
+                                    "x": 0,
+                                    "y": 10,
+                                    "width": legendtopwidth,
+                                    "height": legendtopheight,
+                                    "id": "top_container"
+                                  });
+        //legend titles
+        legend.append("text")
+              .attrs({
+                "x": 0,
+                "y": legendcentery-scalelimit-10,
+                "font-size": (textscalefactor+0.2)+"em",
+                "text-anchor": "start"
+              })
+              .text("Income difference (\u20AC)");
+              
+        legend.append("text")
+              .attrs({
+                "x": legendwidth*0.95,
+                "y": legendcentery-scalelimit-10,
+                "font-size": (textscalefactor+0.2)+"em",
+                "text-anchor":"end"
+              })
+              .text("Population");
+
+        legend.append("text")
+              .attrs({
+                "x": legendcenterx,
+                "y": legendcentery+scalelimit+40,
+                "id": "statetext",
+                "class": "clone"
+              })                             
+              .styles({
+                "text-anchor": "middle",
+                "font-size": "1.4em",
+                "font-weight": "bold"
+              });
+
+      var data = [{"Statistical Data":"Statistische Ämter des Bundes und der Länder"},{Geometries:"Bundesamt für Kartographie und Geodäsie"}, {Technical:"D3.js + SVG"}];//, {Author:"Alain Schengen"}];
+
+      var bot_infocontainer = legend.append("svg")
+                                    .attrs({
+                                      "x": 0,
+                                      "y": legendheight-50,
+                                      "width": "100%",
+                                      "height": "100%"
+                                    });
+
+      var para = bot_infocontainer.append("foreignObject")
+                       .attrs({
+                         "x": 0,
+                         "y": 0,
+                         "height": 50,
+                         "width": "100%",
+                         "id": "test",
+                         "class":"left"
+                       })
+                       .append("xhtml:div")
+                       .attr("class","left")
+                       .selectAll("tspan.left")
+                       .data(data)
+                       .enter()
+                       .append("tspan")
+                       .html( (d) => { return Object.keys(d) +": "+d[Object.keys(d)]+"<br />"} );
+
+        
+      var bot_container = legend.append("svg")
+                                .attrs({
+                                  "x": textanchorleft,
+                                  "y": parseInt(bot_infocontainer.attr("y")) - elementbuffery-20,
+                                  "width": legendwidth,
+                                  "height": elementbuffery,
+                                  "id":"bot_container"
+                                });
+
+      
+      var bot_malefemale = bot_container.append("svg")
+                                   .attrs({
+                                     "width": 40*bot_malefemalescale,
+                                     "height": bot_container.attr("height")*bot_malefemalescale,
+                                     "x": 0,
+                                     "y": ((bot_container.attr("height")-bot_container.attr("height")*bot_malefemalescale))/2,
+                                     "id": "bot_malefemale"
+                                   });
+
+        
+        var bot_rect_width = 12*bot_malefemalescale;
+
+        bot_malefemale.append("rect")
+              .attrs({
+                "x": bot_malefemale.attr("width")/2,
+                "y": bot_malefemale.attr("height")/2,
+                "height": bot_malefemale.attr("height")/2,
+                "width": bot_rect_width,
+                "class":"male"
+              });
+
+        bot_malefemale.append("rect")
+              .attrs({
+                "x": bot_malefemale.attr("width")/2-bot_rect_width,
+                "y": 0,
+                "height": d3.select("#bot_malefemale").attr("height")/2,
+                "width": bot_rect_width,
+                "class":"female"
+              });
+
+        bot_malefemale.append("path")
+              .attrs({
+                "d": "M"+0+","+bot_malefemale.attr("height")/2+"h"+45*bot_malefemalescale,
+                "class": "whiteline"
+              });
+
+        bot_malefemale.append("text")
+              .text("\u2642")
+              .attrs({
+                "x": (bot_malefemale.attr("width")/2+bot_rect_width/2+2),
+                "y": bot_malefemale.attr("height")/2-7,
+                "class": "malefemale",
+                "font-size": 1.4*bot_malefemalescale+"em",
+                "text-anchor":"middle"
+              });
+
+        bot_malefemale.append("text")
+              .text("\u2640")
+              .attrs({
+                "x": bot_malefemale.attr("width")/2-bot_rect_width/2,
+                "y": -7,
+                "class": "malefemale",
+                "font-size": 1.4*bot_malefemalescale+"em",
+                "text-anchor":"middle"
+              });
+
+        //container for arrow lines and 0 next to male female bar explanation
+        var marker_h = 8,
+            marker_w = 8;
+
+        var bot_arrowlines = bot_container.append("svg")
+                           .attrs({
+                             "width": 20*bot_malefemalescale,
+                             "height": bot_container.attr("height")*bot_malefemalescale,
+                             "x": (parseInt(bot_malefemale.attr("width"))+5*bot_malefemalescale),
+                             "y": ((bot_container.attr("height")-bot_container.attr("height")*bot_malefemalescale))/2
+                           });
+
+        bot_arrowlines.append("text")
+              .attrs({
+                "x": bot_arrowlines.attr("width")/2,
+                "y": bot_arrowlines.attr("height")/2,
+                "font-size": bot_malefemalescale+"em",
+                "dominant-baseline": "mathematical",
+                "text-anchor": "middle"
+              })
+              .text("0");
+
+        bot_container.append("svg:defs").append("svg:marker")
+                                 .attrs({
+                                   "id": "triangle",
+                                   "refX": 0,
+                                   "refY": 2,
+                                   "markerWidth": marker_w,
+                                   "markerHeight": marker_h,
+                                   "orient": "auto",
+                                  })
+                                 .append("path")
+                                 .attr("d", "M2,2 L0,4 L7,2 L0,0, L2,2")
+                                 .styles({
+                                   "fill": "white",
+                                   "stroke-width": 1,
+                                   "opacity": 1
+                                 });
+
+        bot_arrowlines.append("path")
+              .attrs({
+                "d": "M"+(bot_arrowlines.attr("width")/2)+","+(bot_arrowlines.attr("height")/2-12*bot_malefemalescale)+"V"+(marker_w),
+                "class": "arc",
+                "marker-end": "url(#triangle)"
+              })
+              .style("fill", "white");
+
+        bot_arrowlines.append("path")
+              .attrs({
+                "d": "M"+(bot_arrowlines.attr("width")/2)+","+(bot_arrowlines.attr("height")/2+12*bot_malefemalescale)+"V"+(bot_arrowlines.attr("height")- marker_w),
+                "class": "arc",
+                "marker-end": "url(#triangle)"
+              })
+              .style("fill", "white");
+
+        var bot_arrowlines_text = bot_container.append("svg")
+                                               .attrs({
+                                                  "x": (parseInt(bot_arrowlines.attr("x"))+parseInt(bot_arrowlines.attr("width"))),
+                                                  "y": bot_arrowlines.attr("y"),
+                                                  "width": 120*bot_malefemalescale,
+                                                  "height": bot_arrowlines.attr("height")
+
+                                               });
+
+        bot_arrowlines.append("text")
+                      .attrs({
+                        "x": bot_arrowlines.attr("width")/2,
+                        "y": -2,
+                        "font-size": bot_malefemalescale+"em",                        
+                        "text-anchor": "middle"
+                      })
+                      .text("+n");
+
+        bot_arrowlines.append("text")
+                      .attrs({
+                        "x": bot_arrowlines.attr("width")/2,
+                        "y": parseInt(bot_arrowlines.attr("height"))+2,
+                        "font-size": bot_malefemalescale+"em",
+                        "dominant-baseline": "mathematical",
+                        "text-anchor": "middle"
+                      })
+                      .text("-n");
+
+        bot_arrowlines_text.append("text")
+                      .attrs({
+                        "x": 0,
+                        "y": bot_arrowlines.attr("height")/6,
+                        "dominant-baseline": "mathematical",
+                        "font-size": bot_malefemalescale+"em"                   
+                      })
+                      .text("above");
+
+        bot_arrowlines_text.append("text")
+                      .attrs({
+                        "x": 0,
+                        "y": bot_arrowlines_text.attr("height")/2,
+                        "font-size": bot_malefemalescale+"em",
+                        "font-weight": "bold",
+                        "dominant-baseline": "middle"
+                      })
+                      .text("german average");
+
+        bot_arrowlines_text.append("text")
+                      .attrs({
+                        "x": 0,
+                        "y": bot_arrowlines_text.attr("height")*(1-1/6),
+                        "dominant-baseline": "mathematical",                        
+                        "font-size": bot_malefemalescale+"em"
+                      })
+                      .text("below");
+
+     var bot_popcontainer = bot_container.append("svg")
+                                            .attrs({
+                                              "x": (parseInt(bot_arrowlines_text.attr("x"))+parseInt(bot_arrowlines_text.attr("width"))+80*bot_malefemalescale),
+                                              "y": 0,
+                                              "height": bot_container.attr("height"),
+                                              "width": bot_container.attr("height")*1.4
+                                            });
+
+     legend.append("foreignObject")
+           .attrs({
+             "x": textanchorleft,
+             "y": bot_container.attr("y")-40,
+             "width": "100%",
+             "height": 30,
+             "font-size": "1em"
+           })
+           .append("xhtml:p")
+           .html("<u>Income difference (\u20AC)</u>")
+           .attr("align", "left");
+
+      var bot_circle = bot_popcontainer.append("circle")
+                      .attrs({
+                        "cx": bot_container.attr("height")/2,
+                        "cy": bot_container.attr("height")/2,
+                        "r": bot_container.attr("height")*bot_malefemalescale/2,
+                        "id": "bot_circle"
+                      });
+
+      legend.append("foreignObject")
+           .attrs({
+             "x": ((textanchorleft + parseInt(bot_popcontainer.attr("x"))) + parseInt(bot_circle.attr("cx")) - parseInt(bot_circle.attr("r"))),
+             "y": bot_container.attr("y")-40,
+             "width": "100%",
+             "height": 30,
+             "font-size": "1em"
+           })
+           .append("xhtml:p")
+           .html("<u>Population count</u>")
+           .attr("align", "left");                
+
+      bot_popcontainer.append("path")
+              .attrs({
+                "d": "M"+50+","+(bot_container.attr("height")/2)+"V"+((bot_container.attr("height")/2-bot_circle.attr("r"))+marker_w),
+                "class": "arc",
+                "marker-end": "url(#triangle)"
+              })
+              .style("fill", "white");
+
+      bot_popcontainer.append("circle")
+                      .attrs({
+                        "cx": bot_container.attr("height")/2,
+                        "cy": bot_container.attr("height")/2,
+                        "r": 1.5
+                      })
+                      .style("fill", "white");
+
+      bot_popcontainer.append("path")
+                      .attrs({
+                        "d": "M"+50+","+(bot_container.attr("height")/2-bot_circle.attr("r"))+" h"+(bot_arrowlines.attr("height")/2+20),
+                        "class": "leaderline"
+                      });
+
+      bot_popcontainer.append("text")
+                      .attrs({
+                        "x": 50+bot_arrowlines.attr("height")/2+40,
+                        "y": bot_container.attr("height")/2,
+                        "dominant-baseline": "mathematical",
+                        "font-size": bot_malefemalescale+"em",
+                        "text-anchor": "end"
+                      })
+                      .text("0");
+
+      bot_popcontainer.append("text")
+                      .attrs({
+                        "x": 50+bot_arrowlines.attr("height")/2+40,
+                        "y": (bot_container.attr("height")/2-bot_circle.attr("r")),
+                        "dominant-baseline": "middle",
+                        "font-size": bot_malefemalescale+"em",
+                        "text-anchor": "end"
+                      })
+                      .text("+n");
+
+      bot_popcontainer.append("path")
+                      .attrs({
+                        "d": "M"+50+","+bot_container.attr("height")/2+"h"+(bot_arrowlines.attr("height")/2+20),
+                        "class": "leaderline"
+                      });
+
+        //drawing right side of legend
+        top_container.selectAll("text.scaletextright")
+              .data(popscale)
+              .enter()
+              .append("text")
+              .text(d => { return getNumberFormat(d)})
+              .attrs({
+                "class": "scaletext",
+                "x": legendcenterx+scalelimit+70,
+                "y": d => { return legendcentery - Math.sqrt(d/popScaleFactor)},
+                "font-size": textscalefactor+"em"
+              });
+        
+
+        top_container.selectAll("path.arc")
+              .data(popscale)
+              .enter()
+              .append("path")
+              .attrs({
+                "d": d => {return "M"+legendcenterx+", "+(legendcentery-(Math.sqrt(d/popScaleFactor)))+"A1 1 0 0 1 "+legendcenterx+","+(legendcentery+(Math.sqrt(d/popScaleFactor)))+"h3"},
+                "class": "arc"                
+              });
+
+        top_container.selectAll("path.popline")
+              .data(popscale)
+              .enter()
+              .append("path")
+              .attrs({
+                "d": d => {return "M"+legendcenterx+","+(legendcentery-(Math.sqrt(d/popScaleFactor)))+"h"+scalelimit;},
+                "class": "popline"
+              });      
+        
+        top_container.append("path")
+              .attrs({
+                "d": "M"+(textanchorleft+20)+","+legendcentery+"H"+(legendcenterx+scalelimit+60),
+                "class":"popline"
+              });
+
+        top_container.append("text")
+              .text("0")
+              .attrs({
+                "class":"poptext",
+                "x": legendcenterx + scalelimit + 70,
+                "y": legendcentery,
+                "class": "scaletext",
+                "font-size": textscalefactor+"em"
+              });
+
+
+
+        //drawing left side of legend
+
+        top_container.append("path")
+              .attrs({
+                "d": "M"+(textanchorleft+elementbufferx*4)+","+(legendcentery-scalelimit-10)+"V"+(legendcentery+scalelimit+10),
+                "class": "incline"
+              });
+
+        top_container.append("text")
+              .text("0")
+              .attrs({
+                "class": "scaletext",
+                "x": textanchorleft+15,
+                "y": legendcentery,
+                "font-size": textscalefactor+"em"
+              });
+
+        top_container.selectAll("text.scaletextleftupper")
+              .data(incscale)
+              .enter()
+              .append("text")
+              .text(d => {return getNumberFormat(d)})
+              .attrs({
+                "class": "scaletext",
+                "x": textanchorleft+15,
+                "y": d => { return legendcentery - d/incScaleFactor},
+                "font-size": textscalefactor+"em"
+              });
+
+        for(var i = 0;i<incscale.length;i++){
+         top_container.append("path")
+                .attrs({
+                  "d": () => {
+                          return  i%2 == 0 ? ("M"+(textanchorleft+elementbufferx*3)+","+(legendcentery- incscale[i]/incScaleFactor)+"h"+elementbufferx*2) : ("M"+(textanchorleft+elementbufferx*3.5)+","+(legendcentery- incscale[i]/incScaleFactor)+"h"+(elementbufferx))},
+                  "class":"incline"
+                });
+
+         top_container.append("path")
+                .attrs({
+                  "d": () => {
+                          return  i%2 == 0 ? ("M"+(textanchorleft+elementbufferx*3)+","+(legendcentery+ incscale[i]/incScaleFactor)+"h"+elementbufferx*2) : ("M"+(textanchorleft+elementbufferx*3.5)+","+(legendcentery+ incscale[i]/incScaleFactor)+"h"+(elementbufferx))},
+                  "class": "incline"
+                });
+        }
+
+        top_container.selectAll("text.scaletextleftlower")
+              .data(incscale)
+              .enter()
+              .append("text")
+              .text(d => {return "- "+getNumberFormat(d)})
+              .attrs({
+                "class": "scaletext",
+                "x": textanchorleft+15,
+                "y": d => { return legendcentery + d/incScaleFactor},              
+                "font-size": textscalefactor+"em"
+              }); 
+      }
+    </script>  
+  </body>
+</html>
